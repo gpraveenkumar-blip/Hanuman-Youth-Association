@@ -8,6 +8,7 @@ import express, {
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import routes from "./routes.js";
@@ -19,20 +20,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = Number(process.env.PORT || 4000);
 
-/*
- * One-service architecture:
- *
- *   backend/dist/server.js
- *          |
- *          +--> frontend/dist
- *          +--> /api/*
- *          +--> /uploads/*
- *          +--> /health
- *
- * The browser uses only:
- *
- *   http://localhost:4000
- */
 const frontendDist = path.resolve(
   __dirname,
   "../../frontend/dist"
@@ -45,10 +32,6 @@ const frontendIndex = path.join(
 
 const origin = process.env.FRONTEND_ORIGIN;
 
-/* ==========================================================================
-   SECURITY
-   ========================================================================== */
-
 app.use(security);
 
 if (origin) {
@@ -60,10 +43,6 @@ if (origin) {
   );
 }
 
-/* ==========================================================================
-   BODY / COOKIE
-   ========================================================================== */
-
 app.use(
   express.json({
     limit: "1mb",
@@ -71,10 +50,6 @@ app.use(
 );
 
 app.use(cookieParser());
-
-/* ==========================================================================
-   UPLOADS
-   ========================================================================== */
 
 const uploadDir = path.resolve(
   process.env.UPLOAD_DIR || "./uploads"
@@ -87,27 +62,9 @@ app.use(
   })
 );
 
-/* ==========================================================================
-   API
-   ========================================================================== */
-
-/*
- * Keep API routes BEFORE the React fallback.
- *
- * Includes:
- *   /api/auth/login
- *   /api/auth/logout
- *   /api/auth/me
- *   /api/site
- *   /api/events
- *   /api/media
- *   /api/contact
- *   /api/hero-video
- */
-// Keep the rate limiter scoped to API requests only.
+/* API */
 app.use("/api", apiLimiter);
 
-// Simple deployment diagnostic.
 app.get(
   "/api/test",
   (_req: Request, res: Response) => {
@@ -121,97 +78,43 @@ app.get(
 
 app.use("/api", routes);
 
-/* ==========================================================================
-   HEALTH
-   ========================================================================== */
-
-/*
- * Simple deployment diagnostic.
- * If /api/test returns JSON, Express and the /api mount are working.
- */
-app.get(
-  "/api/test",
-  (_req: Request, res: Response) => {
-    return res.json({
-      ok: true,
-      message: "API is working",
-      service: "hya-jaklair",
-    });
-  }
-);
-
-/* ==========================================================================
-   HEALTH
-   ========================================================================== */
-
+/* HEALTH */
 app.get(
   "/health",
   (_req: Request, res: Response) => {
     return res.json({
       ok: true,
       service: "hya-jaklair",
-      mode: "single-service",
+      mode: process.env.VERCEL
+        ? "vercel"
+        : "single-service",
     });
   }
 );
 
-/* ==========================================================================
-   FRONTEND STATIC FILES
-   ========================================================================== */
+/* Static frontend for local/Render */
+if (fs.existsSync(frontendDist)) {
+  app.use(
+    express.static(frontendDist, {
+      index: "index.html",
+      fallthrough: true,
+    })
+  );
+}
 
-app.use(
-  express.static(frontendDist, {
-    index: "index.html",
-    fallthrough: true,
-  })
-);
-
-/* ==========================================================================
-   REACT SPA FALLBACK
-   ========================================================================== */
-
-/*
- * React Router owns these browser URLs:
- *
- *   /
- *   /admin
- *   /admin/login
- *   /admin/signup
- *   /admin/messages
- *
- * Express must return frontend/dist/index.html.
- *
- * React then reads window.location and React Router renders
- * the correct page.
- */
 function serveReactApp(
   _req: Request,
   res: Response
 ) {
-  return res.sendFile(
-    frontendIndex,
-    (error) => {
-      if (error && !res.headersSent) {
-        console.error(
-          "Failed to serve React application:",
-          error
-        );
+  if (!fs.existsSync(frontendIndex)) {
+    return res.status(503).send(
+      "Frontend build is missing. Run npm run build first."
+    );
+  }
 
-        return res.status(503).json({
-          message:
-            "Frontend build is unavailable. Run npm run build first.",
-        });
-      }
-    }
-  );
+  return res.sendFile(frontendIndex);
 }
 
-/*
- * Explicit admin routes.
- *
- * This makes direct navigation to /admin/login work on
- * the same Express server.
- */
 app.get(
   [
     "/admin",
@@ -222,23 +125,12 @@ app.get(
   serveReactApp
 );
 
-/*
- * General React Router fallback.
- *
- * This MUST be after /api, /uploads, /health and static files.
- *
- * Express 5 syntax:
- *   /{*splat}
- */
 app.get(
   "/{*splat}",
   serveReactApp
 );
 
-/* ==========================================================================
-   ERROR HANDLER
-   ========================================================================== */
-
+/* Error handler */
 app.use(
   (
     error: any,
@@ -262,28 +154,35 @@ app.use(
   }
 );
 
-/* ==========================================================================
-   START
-   ========================================================================== */
+/*
+ * Render/local: start a normal HTTP server.
+ * Vercel: export the Express app to the serverless runtime.
+ */
+if (!process.env.VERCEL) {
+  app.listen(
+    port,
+    "0.0.0.0",
+    () => {
+      console.log(
+        `HYA JAKLAIR running on http://localhost:${port}`
+      );
+      console.log(
+        `Frontend: ${frontendDist}`
+      );
+      console.log(
+        `Admin login: http://localhost:${port}/admin/login`
+      );
+      console.log(
+        `Admin dashboard: http://localhost:${port}/admin`
+      );
+      console.log(
+        `API test: http://localhost:${port}/api/test`
+      );
+      console.log(
+        `Hero video: http://localhost:${port}/api/hero-video`
+      );
+    }
+  );
+}
 
-app.listen(
-  port,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `HYA JAKLAIR running on http://localhost:${port}`
-    );
-    console.log(
-      `Frontend: ${frontendDist}`
-    );
-    console.log(
-      `Admin login: http://localhost:${port}/admin/login`
-    );
-    console.log(
-      `Admin dashboard: http://localhost:${port}/admin`
-    );
-    console.log(
-      `Hero video: http://localhost:${port}/api/hero-video`
-    );
-  }
-);
+export default app;
