@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+frontend/public/
+
+# Build output
+frontend/dist/
+backend/dist/
+
+# Environment / secrets
+
+venv/
+.venv/
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!.env.example
+
+
+# Runtime uploads / local data
+uploads/
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs / temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Render / local
+.render/
+
+# Coverage
+coverage/
+.nyc_output/
+
+package.json
+render.yaml
+venv/
