@@ -95,8 +95,13 @@ router.head("/hero-video", proxyHeroVideo);
    FILE UPLOADS
    ========================================================================== */
 
+// Vercel Functions have a small request-body limit. Keep the API upload
+// route conservative; large videos should use direct-to-Supabase uploads.
 const maxUploadSize =
-  Number(process.env.MAX_UPLOAD_MB || 100) *
+  Number(
+    process.env.MAX_UPLOAD_MB ||
+    (process.env.VERCEL ? 4 : 100)
+  ) *
   1024 *
   1024;
 
@@ -917,9 +922,10 @@ router.post(
           uploadError
         );
 
-        return res.status(500).json({
+        return res.status(502).json({
           message:
-            "Failed to upload file to storage",
+            uploadError.message ||
+            "Supabase Storage upload failed",
         });
       }
 
@@ -977,6 +983,7 @@ router.post(
          RETURNING
           id,
           url,
+          thumbnail_url AS "thumbnailUrl",
           title,
           caption,
           type,
@@ -1036,7 +1043,9 @@ router.post(
 
       return res.status(500).json({
         message:
-          "Failed to upload media",
+          error instanceof Error
+            ? error.message
+            : "Failed to upload media",
       });
     }
   }
@@ -1599,9 +1608,10 @@ router.post(
           uploadError
         );
 
-        return res.status(500).json({
+        return res.status(502).json({
           message:
-            "Failed to upload event media to storage",
+            uploadError.message ||
+            "Supabase Storage upload failed",
         });
       }
 
@@ -1739,7 +1749,9 @@ router.post(
 
       return res.status(500).json({
         message:
-          "Failed to upload event media"
+          error instanceof Error
+            ? error.message
+            : "Failed to upload event media"
       });
     }
   }
