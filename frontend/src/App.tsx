@@ -186,16 +186,21 @@ export default function App() {
       mounted = false;
     };
   }, []);
+const filteredPhotos = useMemo(() => {
+  const normalizedQuery = query.trim().toLowerCase();
 
-  const filtered = useMemo(() => {
-    const normalizedQuery = query.toLowerCase();
+  return media.filter((m) => {
+    if (m.type !== "photo") return false;
 
-    return media.filter((m) =>
-      `${m.title} ${m.caption} ${m.category}`
-        .toLowerCase()
-        .includes(normalizedQuery)
-    );
-  }, [media, query]);
+    return `${m.title} ${m.caption} ${m.category}`
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+}, [media, query]);
+
+const videos = useMemo(() => {
+  return media.filter((m) => m.type === "video");
+}, [media]);
 
   const scroll = (id: string) => {
     document
@@ -550,7 +555,7 @@ export default function App() {
           </div>
 
           <div className="mt-14 columns-1 gap-4 sm:columns-2 lg:columns-3">
-            {filtered.map((m) => (
+            {filteredPhotos.map((m) => (
               <div
                 key={m.id}
                 className="mb-4 break-inside-avoid"
@@ -569,29 +574,27 @@ export default function App() {
           VIDEOS
       ========================================================== */}
       <Section
-        id="videos"
-        eyebrow="05 / Videos"
-        title="The movement, in motion."
-      >
-        <div className="mt-14 grid gap-5 md:grid-cols-2">
-          {media
-            .filter((m) => m.type === "video")
-            .map((m) => (
-              <MediaCard
-                key={m.id}
-                item={m}
-                onOpen={setLightbox}
-              />
-            ))}
+  id="videos"
+  eyebrow="05 / Videos"
+  title="The movement, in motion."
+>
+  <div className="mt-14 grid gap-5 md:grid-cols-2">
+    {videos.map((m) => (
+      <MediaCard
+        key={m.id}
+        item={m}
+        onOpen={setLightbox}
+      />
+    ))}
 
-          {media.filter((m) => m.type === "video").length === 0 && (
-            <div className="md:col-span-2 rounded-[2rem] border border-dashed border-white/10 p-10 text-white/45">
-              Published videos will appear here. Admins can upload MP4/WebM
-              or add official video links.
-            </div>
-          )}
-        </div>
-      </Section>
+    {videos.length === 0 && (
+      <div className="md:col-span-2 rounded-[2rem] border border-dashed border-white/10 p-10 text-white/45">
+        Published videos will appear here. Admins can upload MP4/WebM
+        or add official video links.
+      </div>
+    )}
+  </div>
+</Section>
 
       {/* =========================================================
           COMMUNITY

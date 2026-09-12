@@ -2,8 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { Readable } from "node:stream";
 import bcrypt from "bcryptjs";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
+import { supabase } from "./lib/supabase.js";
 import { z } from "zod";
 import { query } from "./db/client.js";
 import { requireAuth, signAdmin } from "./middleware/auth.js";
@@ -96,41 +95,15 @@ router.head("/hero-video", proxyHeroVideo);
    FILE UPLOADS
    ========================================================================== */
 
-const uploadDir = path.resolve(
-  process.env.UPLOAD_DIR || "./uploads"
-);
-
-fs.mkdirSync(uploadDir, { recursive: true });
-
 const maxUploadSize =
   Number(process.env.MAX_UPLOAD_MB || 100) *
   1024 *
   1024;
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadDir);
-  },
-
-  filename: (_req, file, cb) => {
-    const safeName = file.originalname.replace(
-      /[^a-zA-Z0-9._-]/g,
-      "_"
-    );
-
-    cb(
-      null,
-      `${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2)}-${safeName}`
-    );
-  }
-});
-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: maxUploadSize
+    fileSize: maxUploadSize,
   },
   fileFilter: (_req, file, cb) => {
     const allowed =
@@ -146,20 +119,29 @@ const upload = multer({
     }
 
     cb(null, true);
-  }
+  },
 });
+
+function createStoragePath(
+  originalName: string,
+  type: "photo" | "video"
+) {
+  const safeName = originalName
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+
+  const folder =
+    type === "photo"
+      ? "images"
+      : "videos";
+
+  return `${folder}/${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}-${safeName}`;
+}
 
 /* ==========================================================================
    HELPERS
    ========================================================================== */
-
-function getUploadUrl(filename: string) {
-  const base =
-    process.env.PUBLIC_UPLOAD_BASE_URL ||
-    "/uploads";
-
-  return `${base.replace(/\/$/, "")}/${filename}`;
-}
 
 function getMediaType(
   mimetype: string
@@ -901,7 +883,7 @@ router.post(
   ) => {
     if (!req.file) {
       return res.status(400).json({
-        message: "File required"
+        message: "File required",
       });
     }
 
@@ -910,9 +892,48 @@ router.post(
         req.file.mimetype
       );
 
-      const url = getUploadUrl(
-        req.file.filename
-      );
+      const storagePath =
+        createStoragePath(
+          req.file.originalname,
+          type
+        );
+
+      const { error: uploadError } =
+        await supabase.storage
+          .from("hya-media")
+          .upload(
+            storagePath,
+            req.file.buffer,
+            {
+              contentType:
+                req.file.mimetype,
+              upsert: false,
+            }
+          );
+
+      if (uploadError) {
+        console.error(
+          "Supabase upload failed:",
+          uploadError
+        );
+
+        return res.status(500).json({
+          message:
+            "Failed to upload file to storage",
+        });
+      }
+
+      const {
+        data: publicData,
+      } =
+        supabase.storage
+          .from("hya-media")
+          .getPublicUrl(
+            storagePath
+          );
+
+      const url =
+        publicData.publicUrl;
 
       const title = String(
         req.body.title ||
@@ -928,34 +949,11 @@ router.post(
           "Community"
       );
 
-      /*
-       * IMPORTANT:
-       *
-       * There are exactly 8 target columns:
-       *
-       * url
-       * title
-       * caption
-       * mime_type
-       * file_size
-       * category
-       * type
-       * published
-       *
-       * Therefore there must be exactly 8 values.
-       *
-       * Correct:
-       *
-       * VALUES($1,$2,$3,$4,$5,$6,$7,true)
-       *
-       * NOT:
-       *
-       * VALUES($1,$2,$3,$4,$5,$6,$7,$8,true)
-       */
       const result = await query(
         `INSERT INTO media
           (
             url,
+            thumbnail_url,
             title,
             caption,
             mime_type,
@@ -967,6 +965,7 @@ router.post(
          VALUES
           (
             $1,
+            CASE WHEN $7 = 'photo' THEN $1 ELSE NULL END,
             $2,
             $3,
             $4,
@@ -992,7 +991,7 @@ router.post(
           req.file.mimetype,
           req.file.size,
           category,
-          type
+          type,
         ]
       );
 
@@ -1021,7 +1020,8 @@ router.post(
           filename:
             req.file.originalname,
           fileSize:
-            req.file.size
+            req.file.size,
+          storagePath,
         }
       );
 
@@ -1036,76 +1036,15 @@ router.post(
 
       return res.status(500).json({
         message:
-          "Failed to upload media"
+          "Failed to upload media",
       });
     }
   }
 );
 
-router.put(
-  "/media/:id",
-  requireAuth,
-  async (
-    req: AuthRequest,
-    res
-  ) => {
-    const body = z
-      .object({
-        title: z.string().optional(),
-        caption: z.string().optional(),
-        category: z.string().optional(),
-        featured: z.boolean().optional(),
-        published: z.boolean().optional()
-      })
-      .parse(req.body);
-
-    const result = await query(
-      `UPDATE media
-       SET
-        title=COALESCE($1,title),
-        caption=COALESCE($2,caption),
-        category=COALESCE($3,category),
-        featured=COALESCE($4,featured),
-        published=COALESCE($5,published)
-       WHERE id=$6
-       RETURNING
-        id,
-        url,
-        title,
-        caption,
-        type,
-        category,
-        featured,
-        published,
-        created_at AS "createdAt"`,
-      [
-        body.title ?? null,
-        body.caption ?? null,
-        body.category ?? null,
-        body.featured ?? null,
-        body.published ?? null,
-        String(req.params.id)
-      ]
-    );
-
-    if (!result.rows.length) {
-      return res.status(404).json({
-        message: "Media not found"
-      });
-    }
-
-    await writeAuditLog(
-      req.adminId,
-      "media_updated",
-      "media",
-      String(req.params.id)
-    );
-
-    return res.json(
-      result.rows[0]
-    );
-  }
-);
+/* ==========================================================================
+   DELETE MEDIA
+   ========================================================================== */
 
 router.delete(
   "/media/:id",
@@ -1114,56 +1053,94 @@ router.delete(
     req: AuthRequest,
     res
   ) => {
+    const id = String(req.params.id);
+
     try {
       const result = await query(
         `SELECT url
          FROM media
          WHERE id=$1`,
-        [String(req.params.id)]
+        [id]
       );
 
-      const mediaUrl =
-        result.rows[0]?.url;
+      if (!result.rows.length) {
+        return res.status(404).json({
+          message: "Media not found",
+        });
+      }
 
+      const mediaUrl = result.rows[0].url;
+
+      /*
+       * Remove the file from Supabase Storage when this
+       * record belongs to the hya-media bucket.
+       */
       if (
-        typeof mediaUrl ===
-          "string" &&
+        typeof mediaUrl === "string" &&
         mediaUrl.includes(
-          "/uploads/"
+          "/storage/v1/object/public/hya-media/"
         )
       ) {
-        const filePath =
-          path.join(
-            uploadDir,
-            path.basename(
-              mediaUrl
-            )
-          );
+        const marker =
+          "/storage/v1/object/public/hya-media/";
 
-        if (
-          fs.existsSync(filePath)
-        ) {
-          fs.unlinkSync(
-            filePath
-          );
+        const storagePath = decodeURIComponent(
+          mediaUrl.split(marker)[1] || ""
+        );
+
+        if (storagePath) {
+          const { error } =
+            await supabase.storage
+              .from("hya-media")
+              .remove([storagePath]);
+
+          if (error) {
+            console.error(
+              "Supabase media delete failed:",
+              error
+            );
+          }
         }
       }
+
+      /*
+       * Remove dependent rows first so PostgreSQL
+       * foreign-key constraints cannot block deletion.
+       */
+      await query(
+        `DELETE FROM event_gallery
+         WHERE media_id=$1`,
+        [id]
+      );
+
+      await query(
+        `DELETE FROM photos
+         WHERE media_id=$1`,
+        [id]
+      );
+
+      await query(
+        `DELETE FROM videos
+         WHERE media_id=$1`,
+        [id]
+      );
 
       await query(
         `DELETE FROM media
          WHERE id=$1`,
-        [String(req.params.id)]
+        [id]
       );
 
       await writeAuditLog(
         req.adminId,
         "media_deleted",
         "media",
-        String(req.params.id)
+        id
       );
 
       return res.json({
-        ok: true
+        ok: true,
+        id,
       });
     } catch (error) {
       console.error(
@@ -1172,8 +1149,7 @@ router.delete(
       );
 
       return res.status(500).json({
-        message:
-          "Failed to delete media"
+        message: "Failed to delete media",
       });
     }
   }
@@ -1598,10 +1574,48 @@ router.post(
           req.file.mimetype
         );
 
-      const url =
-        getUploadUrl(
-          req.file.filename
+      const storagePath =
+        createStoragePath(
+          req.file.originalname,
+          type
         );
+
+      const { error: uploadError } =
+        await supabase.storage
+          .from("hya-media")
+          .upload(
+            storagePath,
+            req.file.buffer,
+            {
+              contentType:
+                req.file.mimetype,
+              upsert: false,
+            }
+          );
+
+      if (uploadError) {
+        console.error(
+          "Supabase event media upload failed:",
+          uploadError
+        );
+
+        return res.status(500).json({
+          message:
+            "Failed to upload event media to storage",
+        });
+      }
+
+      const {
+        data: publicData,
+      } =
+        supabase.storage
+          .from("hya-media")
+          .getPublicUrl(
+            storagePath
+          );
+
+      const url =
+        publicData.publicUrl;
 
       const title = String(
         req.body.title ||
@@ -1629,6 +1643,7 @@ router.post(
           `INSERT INTO media
             (
               url,
+              thumbnail_url,
               title,
               caption,
               mime_type,
@@ -1640,6 +1655,7 @@ router.post(
            VALUES
             (
               $1,
+              CASE WHEN $7 = 'photo' THEN $1 ELSE NULL END,
               $2,
               $3,
               $4,
@@ -1707,7 +1723,8 @@ router.post(
           eventId:
             String(req.params.id),
           type,
-          category
+          category,
+          storagePath
         }
       );
 
